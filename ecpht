@@ -1,0 +1,232 @@
+#define BLYNK_PRINT Serial
+
+#include <SPI.h>
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <SimpleTimer.h>
+#include <DHT.h>
+#include <EEPROM.h>
+#include "DFRobot_EC.h"
+
+// You should get Auth Token in the Blynk App.
+// Go to the Project Settings (nut icon).
+char auth[] = "xxxx";
+char ssid[] = "xxxx";
+char pass[] = "xxxx";
+bool level = 0;
+int fan;
+int mist;
+int pumppH;
+int pumpEC;
+int lowWater;
+int pH = 0;
+int dryLevel = 100;
+int maxTemp = 30;
+int minHumidity = 50;
+int ec = 100;
+float humidity = 0;
+float temperature = 0;
+float ecValue = 0;
+
+#define DHTPIN D2          // What digital pin we're connected to
+#define DHTTYPE DHT22   // DHT 22, AM2302, AM2321
+#define EC_PIN D4
+DHT dht(DHTPIN, DHTTYPE);
+SimpleTimer timer;
+
+
+void readInputs()
+{
+  digitalWrite(D8,HIGH);                // turns on Moisture sensor
+  humidity = dht.readHumidity();        // Reads Humidity
+  temperature = dht.readTemperature();  // Reads Temperature
+  lowWater = digitalRead(D1);           // Read Low  water level sensor
+  pH = analogRead(D0)/4;  //read moisture sensor scales value to have a max of 255 for easy storage in EEPROM
+  ec = analogRead(D4)/1024.0*5000;
+  
+  digitalWrite(D8,LOW);                 // turns off moisture sensor
+
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println("Failed to read from DHT sensor!");
+    Serial.print("temperature:");
+    Serial.print(temperature,1);
+    Serial.print("^C  EC:");
+    Serial.print(ecValue,2);
+    Serial.println("ms/cm");
+    return;
+  }
+  
+}
+
+
+void reportToBlynk()
+//Sends data values to Blynk
+{
+  // Sets sliders to values from Controller
+  Blynk.virtualWrite(V1, dryLevel);
+  Blynk.virtualWrite(V2, minHumidity);
+  Blynk.virtualWrite(V3, maxTemp);
+  Blynk.virtualWrite(V14, ec);
+  // Display Values 
+  Blynk.virtualWrite(V5, humidity);
+  Blynk.virtualWrite(V6, temperature);
+  Blynk.virtualWrite(V7, pH);
+  
+  Blynk.virtualWrite(V15, ecValue);
+
+  // Satus LED's
+  Blynk.virtualWrite(V12, fan);         // Controls LEDs in App to indicate
+  Blynk.virtualWrite(V11, mist);        // status of Pumps and fans etc
+  Blynk.virtualWrite(V10, pumppH);
+  Blynk.virtualWrite(V9, pumpEC );     // Low Water warning indicator. Reading the input pin returns 1 but need to scale up to 255 to drive the BLYNK LED widget to full brightnes so * 255
+
+  
+}
+
+BLYNK_WRITE(V1)
+  /*  gets called when Slider attched to virtual pin 1 in the Blynk app changes
+      sets the value of the sider to drylevel. This is the setpoint level for the
+      activation of the flood pump.
+  */   
+{
+  dryLevel = param.asInt();           // assigning incoming value from pin V1 as an int to the dryLevel variable
+  Serial.print ("pH set ");
+  Serial.println (dryLevel);
+  EEPROM.write(1,dryLevel);           //Stores the value of drylevel to EEPROM
+}
+
+BLYNK_WRITE(V2)
+  /* 
+   * sets the min Humidity level for the mister to turn on 
+   */
+{
+  minHumidity =param.asInt();
+  Serial.print ("Humidty ");
+  Serial.println (minHumidity);
+  EEPROM.write(2,minHumidity);           //Stores the value of minHumidity to EEPROM
+}
+
+BLYNK_WRITE(V3)
+/*
+ * sets the tempertaure level for the fans to come on
+ */
+{
+  maxTemp = param.asInt();
+  Serial.print ("Temp Set ");
+  Serial.println ( maxTemp);
+  EEPROM.write(3,maxTemp);           //Stores the value of maxTemp to EEPROM
+}
+BLYNK_WRITE(V14)
+/*
+ * sets the tempertaure level for the fans to come on
+ */
+{
+  ec = param.asInt();
+  Serial.print ("EC Set ");
+  Serial.println (ecValue);
+  EEPROM.write(4,ecValue);           //Stores the value of maxTemp to EEPROM
+}
+
+BLYNK_WRITE(V8)
+/*
+ * Loads settings into EEPROM on Button press
+ */
+{
+  EEPROM.commit();
+}
+ 
+void controlOutputs()
+
+/*  Turns on watre pump to irrigate the grow bed
+    Turns on fans to reduce temperature
+    Turns on mister to increase humidity
+*/
+
+{
+  // GROW BED Moisture
+   if (pH < dryLevel) {         //  compares the mositure level of the bed with the set point value
+    digitalWrite(D5, HIGH);           //  If the bed is too dry then turn on the flodd pump and irrigate the bed
+    pumppH = 255;                      //  Sets Pump status
+   }
+    else {
+      digitalWrite(D5, LOW);          //  If the bed is moist - no need to turn on the pump.
+      pumppH = 0;
+   }
+    
+  // Ambient Temperature
+   if (temperature > maxTemp){
+    digitalWrite(D6, HIGH);          //  Checks to see if Tempertaure is too high 
+    fan = 255;
+   }                                  //  If the Temp is too High turn on the exhaust fan
+    else {
+      digitalWrite(D6, LOW);          //  If its no to high turn the fan is off
+      fan = 0;
+    }
+
+  //  Humidity Control
+   if (humidity < minHumidity){       //  Checks to see if Humidty is too low
+    digitalWrite(D7, HIGH);           //  If its too low turns on mister
+    mist = 255;
+   }
+    else {
+      digitalWrite(D7, LOW);          //  If its high enough turn the mister off
+      mist = 0;
+    }
+    if (ecValue < ec){       //  Checks to see if Humidty is too low
+    digitalWrite(D8, HIGH);           //  If its too low turns on mister
+    pumpEC = 255;
+   }
+    else {
+      digitalWrite(D8, LOW);          //  If its high enough turn the mister off
+     pumpEC = 0;
+    }
+}
+
+
+
+
+void setup()
+{
+
+  EEPROM.begin(512);    // Initialise EEPROM for storing values
+  
+  // Set Output pins to outputs
+  
+  pinMode(D5, OUTPUT);  // Moisture sensor
+  pinMode(D6, OUTPUT);  // Flood Pump
+  pinMode(D7, OUTPUT);  // Fans
+  pinMode(D8, OUTPUT);  // Mister
+  
+  // Debug console
+  Serial.begin(9600);
+  
+  // Set up Blynk
+  Blynk.begin(auth, ssid, pass);
+
+  // Set up Humidty and temp sensor 
+  dht.begin();
+
+  //Read default parameters from EEProm
+  dryLevel = EEPROM.read(1);
+  minHumidity = EEPROM.read(2);
+  maxTemp = EEPROM.read(3);
+  ec = EEPROM.read(4);
+
+  Serial.println(dryLevel);
+  Serial.println(minHumidity);
+  Serial.println(maxTemp);
+  Serial.println(ec);
+
+  // Setup a function to be called every second
+  // this is to limit reporting to Blynk to only once a second
+  timer.setInterval(1000L, reportToBlynk);
+}
+
+
+void loop()
+{
+  readInputs();
+  controlOutputs();
+  Blynk.run();
+  timer.run(); // Initiates SimpleTimer
+} 
